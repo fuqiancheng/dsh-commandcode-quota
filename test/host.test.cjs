@@ -60,6 +60,12 @@ function mount(runtime, config = {}, keys = {}, lazy = false, settings = undefin
       if (name === "webServer") return lazy ? undefined : web;
       return undefined;
     },
+    // 真实 cordis 里访问未注入的服务属性会【抛异常】而不是返回 undefined。
+    // 这条 getter 守住它：代码必须走 ctx.get 并降级，
+    // 否则凭据端点会整个 400（曾经真的这么挂过一次）。
+    get settings() {
+      throw new Error("service settings is not injected");
+    },
     effect(fn) { return fn(); },
     inject(names, fn) { assert.deepEqual(Array.from(names), ["webServer"]); fn({ webServer: web, effect: ctx.effect }); },
     logger: { info() {} },

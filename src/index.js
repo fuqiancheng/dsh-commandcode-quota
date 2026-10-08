@@ -362,7 +362,15 @@ function pickEntries(refs, labels) {
  * 不必因为缺少这个服务就让整个插件不激活。
  */
 function readProviderLabels(ctx) {
-  const service = ctx.settings ?? (typeof ctx.get === "function" ? ctx.get("settings") : undefined);
+  // 只能用 ctx.get：cordis 里访问未注入的服务属性（ctx.settings）会直接抛异常，
+  // 而这里的原则是「读不到就降级」，不该让整个端点跟着失败。
+  if (typeof ctx.get !== "function") return {};
+  let service;
+  try {
+    service = ctx.get("settings");
+  } catch {
+    return {};
+  }
   if (typeof service?.describe !== "function") return {};
   let rows;
   try {
