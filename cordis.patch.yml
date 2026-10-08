@@ -1,0 +1,21 @@
+# dsh-commandcode-quota 补丁层：向 profile 注册 Command Code 额度看板。
+# 注册 ID 与包名一致；用 `dsh plugin add` 安装时本层会被展开到 profile。
+#
+# 默认从凭据条目 COMMANDCODE_API_KEY 读取 key。要换条目名、加回退条目或改用
+# 其它地址，在你自己的 profile 补丁里按同样结构覆盖：
+#
+#   - id: dsh-commandcode-quota
+#     name: 'dsh-commandcode-quota'
+#     config:
+#       apiKeyEnv: MY_COMMANDCODE_KEY
+#       fallbackEnv: MY_BACKUP_KEY         # 可选：首选缺失时回退
+#       baseURL: https://api.commandcode.ai
+#
+# 凭据写在 ~/.dsh/.credentials.yaml，或在 DSH 设置 → 凭据 里添加。
+# 改完需要重载插件树（插件页「刷新」或重启客户端）才生效。
+- insert:
+    - id: dsh-commandcode-quota
+      name: 'dsh-commandcode-quota'
+      config:
+        apiKeyEnv: COMMANDCODE_API_KEY
+        baseURL: https://api.commandcode.ai

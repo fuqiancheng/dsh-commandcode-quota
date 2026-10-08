@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# 本地凭据与个人配置：绝不入库
+.env
+.env.*
+*.local
+.credentials.yaml
+cordis.local.patch.yml
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 打包产物
+*.tgz

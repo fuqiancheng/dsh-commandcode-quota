@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Command Code Quota",
+    "description": "在 DeepSeek Harness 输入框下方查看 Command Code 余额、额度与用量，支持月度、5 小时和每周窗口。"
+  }
+}

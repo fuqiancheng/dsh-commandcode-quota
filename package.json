@@ -1,0 +1,72 @@
+{
+  "name": "dsh-commandcode-quota",
+  "version": "0.2.0",
+  "description": "Command Code balance and quota panel for DeepSeek Harness: a status row under the composer showing balance and the 5-hour, weekly and monthly windows.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "command-code",
+    "commandcode",
+    "balance",
+    "usage",
+    "quota",
+    "status-bar"
+  ],
+  "files": [
+    "src/",
+    "locale/",
+    "test/",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./locale/*": "./locale/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node test/host.test.cjs && node test/client.test.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fuqiancheng/dsh-commandcode-quota.git"
+  },
+  "homepage": "https://github.com/fuqiancheng/dsh-commandcode-quota#readme",
+  "bugs": {
+    "url": "https://github.com/fuqiancheng/dsh-commandcode-quota/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-credentials": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-credentials": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  }
+}

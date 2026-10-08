@@ -1,0 +1,8 @@
+# 统一入库为 LF，避免 Windows 上整文件行尾 diff 噪音。
+* text=auto eol=lf
+
+# 明确按二进制处理，防止被行尾规范化破坏。
+*.png binary
+*.jpg binary
+*.ico binary
+*.tgz binary
