@@ -42,7 +42,7 @@ window.__ModuleLoader__.load({
       return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     }
 
-    // 统一转时间戳: API 里 resetAt 是数字毫秒, createdAt/currentPeriodStart 是 ISO 字符串
+    // 统一转时间戳: API 里 resetAt 是数字毫秒, createdAt/currentPeriodStart/currentPeriodEnd 是 ISO 字符串
     function toMs(ms) {
       if (typeof ms === "number" && Number.isFinite(ms)) return ms;
       if (typeof ms === "string" && ms.length > 0) {
@@ -76,12 +76,24 @@ window.__ModuleLoader__.load({
     }
 
     function fmtDuration(fromMs) {
-      if (!fromMs || fromMs <= Date.now()) return "已重置";
-      const diff = fromMs - Date.now();
-      const h = Math.floor(diff / 3600000);
+      const t = toMs(fromMs);
+      if (t === null) return "—";
+      if (t <= Date.now()) return "已重置";
+      const diff = t - Date.now();
+      const days = Math.floor(diff / 86400000);
+      const h = Math.floor((diff % 86400000) / 3600000);
       const m = Math.floor((diff % 3600000) / 60000);
+      if (days > 0) return `${days}天${h}小时`;
       if (h > 0) return `${h}小时${m}分`;
       return `${m}分${Math.floor((diff % 60000) / 1000)}秒`;
+    }
+
+    // 到期日与今天不同时补上日期, 同时回答"还有多久"和"哪天到期"
+    function fmtResetDay(ms) {
+      const t = toMs(ms);
+      if (t === null || t <= Date.now()) return "";
+      const day = fmtDay(t);
+      return day === fmtDay(Date.now()) ? "" : `（${day}）`;
     }
 
     // ---- 主题 token (对齐 DSH 深色主题层次) -----------------------------------
@@ -291,7 +303,7 @@ window.__ModuleLoader__.load({
           React.createElement("span", null, `已用 ${fmtCurrency(used)}`),
           React.createElement("span", null, `上限 ${fmtCurrency(capSafe)}`)),
         React.createElement("div", { style: { marginTop: 3, fontSize: 11, color: T.label3 } },
-          `剩余 ${fmtCurrency(remaining)} · 重置 ${fmtDuration(resetAt)}`));
+          `剩余 ${fmtCurrency(remaining)} · 重置 ${fmtDuration(resetAt)}${fmtResetDay(resetAt)}`));
     }
 
     // ---- 面板内容 ----------------------------------------------------------------

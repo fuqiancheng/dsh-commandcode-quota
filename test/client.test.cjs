@@ -10,6 +10,8 @@ const fixture = {
   balance: { monthlyCredits: 70 },
   usage: { totalMonthlyCredits: 30, totalTokens: 100, totalCost: 5, successRate: 98 },
   windowLimits: { fiveHour: { used: 10, cap: 100 }, weekly: { used: 20, cap: 100 } },
+  // 月度窗口的重置时间取自订阅周期末，是 ISO 字符串而非毫秒数
+  subscription: { status: "active", currentPeriodEnd: new Date(Date.now() + 20 * 86400000).toISOString() },
 };
 function mount({ open = true, data = fixture, failed = false } = {}) {
   let registration, component, slot, stateIndex = 0;
@@ -65,6 +67,14 @@ async function main() {
   for (const label of ["5h 10%", "周 20%", "月 30%", "$70.00", "5 小时窗口", "每周窗口", "每月窗口"]) {
     assert.ok(view.texts.includes(label), `保留额度展示：${label}`);
   }
+  // 回归：月度重置时间来自 ISO 字符串，未经 toMs 归一化会渲染成 "NaN分NaN秒"
+  const resetTexts = view.texts.filter((t) => t.includes("重置"));
+  assert.equal(resetTexts.length, 3, "三个窗口都应显示重置信息");
+  for (const t of resetTexts) assert.ok(!t.includes("NaN"), `重置文本不应出现 NaN：${t}`);
+  assert.ok(
+    resetTexts.some((t) => /\d+天\d+小时（\d{4}\/\d{2}\/\d{2}）/.test(t)),
+    `月度应显示天级倒计时与到期日，实际：${resetTexts.join(" | ")}`,
+  );
   await buttons.find(node => node.props.title === "刷新").props.onClick();
   assert.deepEqual(view.requests.map(req => req.url), ["/__dsh-commandcode-quota/dashboard?scope=quick", "/__dsh-commandcode-quota/dashboard"]);
   assert.ok(view.requests.every(req => req.options.cache === "no-store"));
