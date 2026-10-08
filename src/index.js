@@ -338,6 +338,38 @@ function readBody(req, limit = 8192) {
 
 // --- plugin ------------------------------------------------------------------
 
+/**
+ * 凭据条目名 → 模型供应商显示名。
+ *
+ * 这层对应本来就存在于模型配置里（provider.apiKeyEnv 指向条目名），所以读
+ * llm-pi-ai 的 providers 就能把 "COMMANDCODE2_API_KEY" 翻译成用户在模型设置页
+ * 看到的 "commandcode2"。读不到就返回空表，调用方回落到只显示条目名。
+ *
+ * 用 ctx.get("settings") 而不是 inject —— 读不到时降级即可，
+ * 不必因为缺少这个服务就让整个插件不激活。
+ */
+function readProviderLabels(ctx) {
+  const service = ctx.settings ?? (typeof ctx.get === "function" ? ctx.get("settings") : undefined);
+  if (typeof service?.describe !== "function") return {};
+  let rows;
+  try {
+    rows = service.describe();
+  } catch {
+    return {};
+  }
+  const row = (Array.isArray(rows) ? rows : []).find((r) => r?.ns === "llm-pi-ai");
+  const providers = row?.user?.providers;
+  if (!providers || typeof providers !== "object") return {};
+  const labels = {};
+  for (const [id, cfg] of Object.entries(providers)) {
+    const ref = cfg?.apiKeyEnv;
+    if (typeof ref !== "string" || ref.length === 0) continue;
+    const label = typeof cfg?.displayName === "string" && cfg.displayName.length > 0 ? cfg.displayName : id;
+    if (!(ref in labels)) labels[ref] = label;
+  }
+  return labels;
+}
+
 function apply(ctx, config) {
   const base = normalizeAccount(config);
   const timeoutMs = Number.isFinite(config?.timeoutMs) && config.timeoutMs > 0
@@ -399,9 +431,11 @@ function apply(ctx, config) {
       handler: async (req, res) => {
         if (req.method === "GET") {
           const account = currentAccount();
+          const labels = readProviderLabels(ctx);
           sendJson(res, 200, {
             ok: true,
-            entries: readCredentialEntries(),
+            // 条目名 + 它对应的模型供应商显示名（没有对应供应商就是 null）
+            entries: readCredentialEntries().map((ref) => ({ ref, provider: labels[ref] ?? null })),
             apiKeyEnv: account.apiKeyEnv,
             fallbackEnv: account.fallbackEnv,
             chosen: readChoice()

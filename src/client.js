@@ -315,10 +315,18 @@ window.__ModuleLoader__.load({
 
     function CredentialPicker({ state, onPick }) {
       const safe = state || {};
-      const entries = Array.isArray(safe.entries) ? safe.entries : [];
+      const raw = Array.isArray(safe.entries) ? safe.entries : [];
+      // entries 是 [{ ref, provider }]；同时容忍纯字符串（宿主端读不到供应商时）
+      const entries = raw
+        .map((e) => (typeof e === "string" ? { ref: e, provider: null } : e))
+        .filter((e) => e && typeof e.ref === "string" && e.ref.length > 0);
       const current = safe.apiKeyEnv ?? null;
       // 当前值可能不在候选里（配置指向了尚未添加的条目），补一项，避免下拉显示空白
-      const options = current && !entries.includes(current) ? [current, ...entries] : entries;
+      const options = current && !entries.some((e) => e.ref === current)
+        ? [{ ref: current, provider: null }, ...entries]
+        : entries;
+      // 能对上模型供应商时显示「供应商（条目名）」，否则只显示条目名
+      const labelOf = (e) => (e.provider ? `${e.provider}（${e.ref}）` : e.ref);
 
       return React.createElement("div", {
         style: {
@@ -351,7 +359,7 @@ window.__ModuleLoader__.load({
           },
         },
           React.createElement("option", { value: "" }, "（未设置）"),
-          options.map((name) => React.createElement("option", { key: name, value: name }, name))),
+          options.map((e) => React.createElement("option", { key: e.ref, value: e.ref }, labelOf(e)))),
         safe.saving ? React.createElement("span", null, "…") : null,
         safe.error ? React.createElement("span", { style: { color: T.error } }, safe.error) : null);
     }

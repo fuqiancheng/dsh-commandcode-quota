@@ -48,13 +48,18 @@ function load() {
 const DASHBOARD = "/__dsh-commandcode-quota/dashboard";
 const CREDS = "/__dsh-commandcode-quota/credentials";
 
-function mount(runtime, config = {}, keys = {}, lazy = false) {
+function mount(runtime, config = {}, keys = {}, lazy = false, settings = undefined) {
   const routes = new Map();
   const refs = [];
   const web = { register(row) { routes.set(row.path, row); return () => {}; } };
   const credentials = { async resolve(ref) { refs.push(ref); return { value: keys[ref] ?? "" }; } };
   const ctx = {
-    get(name) { return name === "credentials" ? credentials : name === "webServer" && !lazy ? web : undefined; },
+    get(name) {
+      if (name === "credentials") return credentials;
+      if (name === "settings") return settings;
+      if (name === "webServer") return lazy ? undefined : web;
+      return undefined;
+    },
     effect(fn) { return fn(); },
     inject(names, fn) { assert.deepEqual(Array.from(names), ["webServer"]); fn({ webServer: web, effect: ctx.effect }); },
     logger: { info() {} },
@@ -173,7 +178,10 @@ async function main() {
   const credsApp = mount(load(), config, { PRIMARY_TEST_KEY: "fixture-primary" });
   const listed = await credsApp.request(CREDS);
   assert.equal(listed.status, 200);
-  assert.deepEqual(listed.body.entries, ["PRIMARY_TEST_KEY", "FALLBACK_TEST_KEY"], "应只列出 refs 段下的条目名");
+  assert.deepEqual(listed.body.entries, [
+    { ref: "PRIMARY_TEST_KEY", provider: null },
+    { ref: "FALLBACK_TEST_KEY", provider: null },
+  ], "应只列出 refs 段下的条目名（未配置 llm-pi-ai 时 provider 为 null）");
   assert.equal(listed.body.apiKeyEnv, "PRIMARY_TEST_KEY");
   for (const secret of ["fixture-primary-value", "fixture-fallback-value"]) {
     assert.ok(!listed.raw.includes(secret), `凭据端点绝不能回值：${secret}`);
@@ -193,6 +201,29 @@ async function main() {
   assert.equal((await chosen.request(DASHBOARD + "?scope=quick")).body.keyConfigured, true);
   assert.deepEqual(chosen.refs, ["FALLBACK_TEST_KEY"], "保存的选择应优先于 patch 配置");
 
+  // 供应商映射：provider.apiKeyEnv 指向条目名时，下拉显示供应商名而不是裸条目名
+  const settingsStub = {
+    describe: () => ([{
+      ns: "llm-pi-ai",
+      user: {
+        providers: {
+          commandcode2: { apiKeyEnv: "PRIMARY_TEST_KEY" },
+          cerebras: { displayName: "bailian", apiKeyEnv: "FALLBACK_TEST_KEY" },
+          noKey: { baseURL: "https://example.invalid" },
+        },
+      },
+    }]),
+  };
+  const labeled = await mount(load(), config, { PRIMARY_TEST_KEY: "x" }, false, settingsStub).request(CREDS);
+  assert.deepEqual(labeled.body.entries, [
+    { ref: "PRIMARY_TEST_KEY", provider: "commandcode2" },
+    { ref: "FALLBACK_TEST_KEY", provider: "bailian" },
+  ], "应把条目名翻译成模型设置里显示的供应商名");
+  // describe() 抛错时必须降级，而不是让整个端点失败
+  const broken = await mount(load(), config, {}, false, { describe() { throw new Error("boom"); } }).request(CREDS);
+  assert.equal(broken.status, 200, "settings 读不到时应降级而不是报错");
+  assert.deepEqual(broken.body.entries.map((e) => e.provider), [null, null]);
+
   // 包自检：声明、注册 id 与 bundle 补丁层三者必须一致。
   const manifest = JSON.parse(fs.readFileSync(join(plugin, "package.json"), "utf8"));
   assert.equal(manifest.name, "dsh-commandcode-quota", "package.json 的 name 必须等于宿主端导出 name");
@@ -206,7 +237,7 @@ async function main() {
   const uaVersion = source.match(/"user-agent":\s*"[^"]*\/([^"]+)"/)?.[1];
   assert.equal(uaVersion, manifest.version, "user-agent 版本必须与 package.json 的 version 一致");
   console.log("通过：单账号响应、主/回退凭据、完整/快速查询、缓存、401、405、重试和超时。");
-  console.log("通过：凭据端点只回条目名、保存后覆盖 patch 配置、非法名被拒、无 key 时依然可用。");
+  console.log("通过：凭据端点只回条目名、翻译供应商名、保存后覆盖 patch 配置、非法名被拒、无 key 时依然可用。");
   console.log("通过：宿主端导出、路由、包名与 bundle 补丁层一致。");
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

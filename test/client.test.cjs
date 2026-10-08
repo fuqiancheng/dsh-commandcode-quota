@@ -93,7 +93,11 @@ async function main() {
 
   // 凭据条目下拉存在的意义就是「没配 key 时也能选」，所以每种面板状态都必须能看到它
   const pickerState = {
-    entries: ["BAILIAN_API_KEY", "COMMANDCODE2_API_KEY"],
+    entries: [
+      { ref: "BAILIAN_API_KEY", provider: "bailian" },
+      { ref: "COMMANDCODE2_API_KEY", provider: "commandcode2" },
+      { ref: "CC_ACCOUNT2_API_KEY", provider: null },
+    ],
     apiKeyEnv: "COMMANDCODE2_API_KEY",
     saving: false,
     error: null,
@@ -106,12 +110,29 @@ async function main() {
     const view2 = mount({ ...options, creds: pickerState });
     const selects = view2.nodes.filter((n) => n.type === "select");
     assert.equal(selects.length, 1, `${label}下应能看到凭据条目下拉`);
-    const values = view2.nodes.filter((n) => n.type === "option").map((o) => o.props.value);
-    assert.deepEqual(values, ["", "BAILIAN_API_KEY", "COMMANDCODE2_API_KEY"], `${label}下的候选项不正确：${values.join(",")}`);
+    const opts = view2.nodes.filter((n) => n.type === "option");
+    assert.deepEqual(
+      opts.map((o) => o.props.value),
+      ["", "BAILIAN_API_KEY", "COMMANDCODE2_API_KEY", "CC_ACCOUNT2_API_KEY"],
+      `${label}下的候选项不正确`,
+    );
+    // 能对上模型供应商的显示「供应商（条目名）」，对不上的只显示条目名
+    assert.deepEqual(opts.map((o) => o.children[0]), [
+      "（未设置）",
+      "bailian（BAILIAN_API_KEY）",
+      "commandcode2（COMMANDCODE2_API_KEY）",
+      "CC_ACCOUNT2_API_KEY",
+    ], `${label}下的显示文案不正确`);
     assert.equal(selects[0].props.value, "COMMANDCODE2_API_KEY", `${label}下应选中当前条目`);
   }
+  // 宿主端读不到供应商时会退化成纯字符串数组，也必须照常工作
+  const plain = mount({ creds: { entries: ["BAILIAN_API_KEY"], apiKeyEnv: null, saving: false, error: null } });
+  assert.deepEqual(
+    plain.nodes.filter((n) => n.type === "option").map((o) => o.children[0]),
+    ["（未设置）", "BAILIAN_API_KEY"],
+  );
   // 配置指向一个尚未添加的条目时也要出现在候选里，否则下拉会显示成空白
-  const orphan = mount({ creds: { entries: ["OTHER_KEY"], apiKeyEnv: "MISSING_KEY", saving: false, error: null } });
+  const orphan = mount({ creds: { entries: [{ ref: "OTHER_KEY", provider: null }], apiKeyEnv: "MISSING_KEY", saving: false, error: null } });
   assert.deepEqual(
     orphan.nodes.filter((n) => n.type === "option").map((o) => o.props.value),
     ["", "MISSING_KEY", "OTHER_KEY"],
