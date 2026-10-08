@@ -3,9 +3,23 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
-const { join } = require("node:path");
+const { join, dirname } = require("node:path");
+const { tmpdir } = require("node:os");
 const plugin = join(__dirname, "..");
 const source = fs.readFileSync(join(plugin, "src/index.js"), "utf8");
+
+// 完全隔离的 DSH_HOME：保存凭据选择会写配置，绝不能落到真实的 ~/.dsh。
+const fakeHome = fs.mkdtempSync(join(tmpdir(), "dsh-quota-test-"));
+fs.writeFileSync(join(fakeHome, ".credentials.yaml"), [
+  "version: 1",
+  "refs:",
+  "  PRIMARY_TEST_KEY: fixture-primary-value",
+  "  FALLBACK_TEST_KEY: fixture-fallback-value",
+  "records: {}",
+  "",
+].join("\n"));
+process.on("exit", () => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* 清理失败不影响测试结论 */ } });
+
 const responses = {
   "/alpha/billing/credits": { credits: { monthlyCredits: 70 }, windowLimits: { fiveHour: { used: 10, cap: 100 } } },
   "/alpha/usage/summary": { totalMonthlyCredits: 30, totalTokens: 100, totalCost: 5, successRate: 98 },
@@ -17,6 +31,13 @@ function load() {
   let reply = async (url) => ({ ok: true, status: 200, json: async () => responses[new URL(url).pathname] });
   const context = vm.createContext({
     Buffer, URL, AbortController, setTimeout, clearTimeout, createHash,
+    // 源码的 import 会被剥掉，所以这里用到的 node 内置必须显式注入
+    readFileSync: fs.readFileSync,
+    writeFileSync: fs.writeFileSync,
+    mkdirSync: fs.mkdirSync,
+    join, dirname,
+    homedir: () => fakeHome,
+    process: { env: { DSH_HOME: fakeHome } },
     credentialRef: (ref) => ref,
     fetch: async (url, options) => { requests.push({ url, options }); return reply(url, options); },
   });
@@ -24,10 +45,13 @@ function load() {
     "\nglobalThis.host = { apply, fetchDashboard, inject, name };", context);
   return { host: context.host, requests, respond(fn) { reply = fn; } };
 }
+const DASHBOARD = "/__dsh-commandcode-quota/dashboard";
+const CREDS = "/__dsh-commandcode-quota/credentials";
+
 function mount(runtime, config = {}, keys = {}, lazy = false) {
-  let route;
+  const routes = new Map();
   const refs = [];
-  const web = { register(row) { route = row; return () => {}; } };
+  const web = { register(row) { routes.set(row.path, row); return () => {}; } };
   const credentials = { async resolve(ref) { refs.push(ref); return { value: keys[ref] ?? "" }; } };
   const ctx = {
     get(name) { return name === "credentials" ? credentials : name === "webServer" && !lazy ? web : undefined; },
@@ -38,19 +62,41 @@ function mount(runtime, config = {}, keys = {}, lazy = false) {
   runtime.host.apply(ctx, config);
   assert.equal(runtime.host.name, "dsh-commandcode-quota");
   assert.deepEqual(Array.from(runtime.host.inject), ["credentials"]);
-  assert.equal(route.kind, "exact");
-  assert.equal(route.path, "/__dsh-commandcode-quota/dashboard");
+
+  const dashboard = routes.get(DASHBOARD);
+  assert.ok(dashboard, "必须注册 dashboard 端点");
+  assert.equal(dashboard.kind, "exact");
+  const creds = routes.get(CREDS);
+  assert.ok(creds, "必须注册 credentials 端点");
+  assert.equal(creds.kind, "exact");
+
+  async function invoke(handler, method, url, payload) {
+    let status, headers, raw;
+    const listeners = {};
+    const req = {
+      method,
+      url,
+      on(event, fn) { (listeners[event] = listeners[event] || []).push(fn); return req; },
+      destroy() {},
+    };
+    const pending = handler(req, {
+      writeHead(code, values) { status = code; headers = values; },
+      end(body) { raw = body; },
+    });
+    if (payload !== undefined) {
+      for (const fn of listeners.data || []) fn(JSON.stringify(payload));
+      for (const fn of listeners.end || []) fn();
+    }
+    await pending;
+    assert.equal(headers["cache-control"], "no-store");
+    assert.equal(headers["content-length"], Buffer.byteLength(raw));
+    return { status, body: JSON.parse(raw), raw };
+  }
+
   return {
     refs,
-    async request(url = route.path, method = "GET") {
-      let status, headers, raw;
-      await route.handler({ method, url }, {
-        writeHead(code, values) { status = code; headers = values; },
-        end(body) { raw = body; },
-      });
-      assert.equal(headers["cache-control"], "no-store");
-      assert.equal(headers["content-length"], Buffer.byteLength(raw));
-      return { status, body: JSON.parse(raw), raw };
+    request(url = DASHBOARD, method = "GET", payload) {
+      return invoke(url.includes("/credentials") ? creds.handler : dashboard.handler, method, url, payload);
     },
   };
 }
@@ -73,7 +119,7 @@ async function main() {
   assert.ok(runtime.requests.every(req => req.options.headers.authorization === "Bearer fixture-primary"));
   assert.deepEqual(app.refs, ["PRIMARY_TEST_KEY"]);
   runtime.requests.length = 0;
-  const quick = await app.request("/__dsh-commandcode-quota/dashboard?scope=quick");
+  const quick = await app.request(DASHBOARD + "?scope=quick");
   assert.equal(runtime.requests.length, 1);
   assert.equal(new URL(runtime.requests[0].url).pathname, "/alpha/billing/credits");
   assert.equal(quick.body.usage.totalMonthlyCredits, 30);
@@ -92,7 +138,7 @@ async function main() {
   assert.equal(runtime.requests.length, 0);
   const fallbackRuntime = load();
   const fallback = mount(fallbackRuntime, config, { FALLBACK_TEST_KEY: "fixture-fallback" }, true);
-  assert.equal((await fallback.request("/__dsh-commandcode-quota/dashboard?scope=quick")).body.keyConfigured, true);
+  assert.equal((await fallback.request(DASHBOARD + "?scope=quick")).body.keyConfigured, true);
   assert.deepEqual(fallback.refs, ["PRIMARY_TEST_KEY", "FALLBACK_TEST_KEY"]);
   assert.equal(fallbackRuntime.requests[0].options.headers.authorization, "Bearer fixture-fallback");
   const emptyRuntime = load();
@@ -100,6 +146,12 @@ async function main() {
   assert.equal(missing.body.keyConfigured, false);
   assert.equal(missing.body.ok, false);
   assert.equal(emptyRuntime.requests.length, 0);
+  assert.ok(missing.body.error.includes("凭据条目"), "缺 key 的提示应指向面板里的选择器");
+  // 缺 key 时，凭据端点必须照常可用 —— 这正是用户最需要它的时候
+  const missingApp = mount(load(), config);
+  const listedWhenEmpty = await missingApp.request(CREDS);
+  assert.equal(listedWhenEmpty.status, 200, "没配 key 时凭据端点也必须可用");
+  assert.equal(listedWhenEmpty.body.apiKeyEnv, "PRIMARY_TEST_KEY");
   const defaultRuntime = load();
   assert.equal((await mount(defaultRuntime, {}, { COMMANDCODE_API_KEY: "fixture-default" }).request()).body.ok, true);
   let attempts = 0;
@@ -108,14 +160,39 @@ async function main() {
     if (++attempts === 1) throw new TypeError("模拟连接失败");
     return { status: 200, json: async () => responses[new URL(url).pathname] };
   });
-  assert.equal((await mount(retryRuntime, config, { PRIMARY_TEST_KEY: "fixture-primary" }).request("/__dsh-commandcode-quota/dashboard?scope=quick")).body.ok, true);
+  assert.equal((await mount(retryRuntime, config, { PRIMARY_TEST_KEY: "fixture-primary" }).request(DASHBOARD + "?scope=quick")).body.ok, true);
   assert.equal(attempts, 2);
   const timeoutRuntime = load();
   timeoutRuntime.respond((url, options) => new Promise((resolve, reject) => {
     options.signal.addEventListener("abort", () => reject(new Error("模拟超时")), { once: true });
   }));
-  assert.equal((await mount(timeoutRuntime, { ...config, timeoutMs: 5 }, { PRIMARY_TEST_KEY: "fixture-primary" }).request("/__dsh-commandcode-quota/dashboard?scope=quick")).body.ok, false);
+  assert.equal((await mount(timeoutRuntime, { ...config, timeoutMs: 5 }, { PRIMARY_TEST_KEY: "fixture-primary" }).request(DASHBOARD + "?scope=quick")).body.ok, false);
   assert.equal(timeoutRuntime.requests.length, 1, "主动超时不重试");
+
+  // 凭据条目端点：GET 只回条目名 + 当前选择，POST 保存选择。放在最后跑，因为保存会改变后续读取。
+  const credsApp = mount(load(), config, { PRIMARY_TEST_KEY: "fixture-primary" });
+  const listed = await credsApp.request(CREDS);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.entries, ["PRIMARY_TEST_KEY", "FALLBACK_TEST_KEY"], "应只列出 refs 段下的条目名");
+  assert.equal(listed.body.apiKeyEnv, "PRIMARY_TEST_KEY");
+  for (const secret of ["fixture-primary-value", "fixture-fallback-value"]) {
+    assert.ok(!listed.raw.includes(secret), `凭据端点绝不能回值：${secret}`);
+  }
+  const saved = await credsApp.request(CREDS, "POST", { apiKeyEnv: "FALLBACK_TEST_KEY" });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.apiKeyEnv, "FALLBACK_TEST_KEY");
+  assert.equal(
+    (await credsApp.request(CREDS, "POST", { apiKeyEnv: "not a valid ref" })).status,
+    400,
+    "非法条目名必须被拒",
+  );
+  assert.equal((await credsApp.request(CREDS, "DELETE")).status, 405);
+  // 保存过的选择要覆盖 profile patch 里的 apiKeyEnv
+  const chosenRuntime = load();
+  const chosen = mount(chosenRuntime, config, { FALLBACK_TEST_KEY: "fixture-fallback" });
+  assert.equal((await chosen.request(DASHBOARD + "?scope=quick")).body.keyConfigured, true);
+  assert.deepEqual(chosen.refs, ["FALLBACK_TEST_KEY"], "保存的选择应优先于 patch 配置");
+
   // 包自检：声明、注册 id 与 bundle 补丁层三者必须一致。
   const manifest = JSON.parse(fs.readFileSync(join(plugin, "package.json"), "utf8"));
   assert.equal(manifest.name, "dsh-commandcode-quota", "package.json 的 name 必须等于宿主端导出 name");
@@ -129,6 +206,7 @@ async function main() {
   const uaVersion = source.match(/"user-agent":\s*"[^"]*\/([^"]+)"/)?.[1];
   assert.equal(uaVersion, manifest.version, "user-agent 版本必须与 package.json 的 version 一致");
   console.log("通过：单账号响应、主/回退凭据、完整/快速查询、缓存、401、405、重试和超时。");
+  console.log("通过：凭据端点只回条目名、保存后覆盖 patch 配置、非法名被拒、无 key 时依然可用。");
   console.log("通过：宿主端导出、路由、包名与 bundle 补丁层一致。");
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

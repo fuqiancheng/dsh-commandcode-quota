@@ -4,8 +4,10 @@
  * 通过 Command Code 官方 API 读取余额与限额数据, 在 DSH Web 界面提供
  * 一个与 OpenCode 余额查询类似的单账号仪表盘。
  *
- *   GET /__dsh-commandcode-quota/dashboard              → 余额 + 限额 + 用量
- *   GET /__dsh-commandcode-quota/dashboard?scope=quick  → 余额优先，其余字段用缓存回填
+ *   GET  /__dsh-commandcode-quota/dashboard              → 余额 + 限额 + 用量
+ *   GET  /__dsh-commandcode-quota/dashboard?scope=quick  → 余额优先，其余字段用缓存回填
+ *   GET  /__dsh-commandcode-quota/credentials            → 候选凭据条目名 + 当前选择
+ *   POST /__dsh-commandcode-quota/credentials            → 保存选择的凭据条目名
  *
  * 数据源 (均为 Authorization: Bearer <key> 的 GET 请求):
  *   GET {base}/alpha/billing/credits        余额 & 窗口限额
@@ -23,6 +25,9 @@
  * ESM module format (cordis bundle rule): named exports apply/inject/name.
  */
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 const name = "dsh-commandcode-quota";
 const inject = ["credentials"];
@@ -249,13 +254,105 @@ async function resolveAccountOptions(ctx, account) {
   };
 }
 
+// --- 凭据条目选择（面板里可切换）----------------------------------------------
+//
+// 两个约束决定了这里的写法：
+//   1. ctx.credentials 只有 resolve/describe/set/unset，没有「列出条目」的能力，
+//      所以候选列表只能自己从 .credentials.yaml 里取 —— 且【只取键名，绝不读值】。
+//   2. 选择要持久化才能跨重启生效；写进 $DSH_HOME 下的一个小 JSON，优先级高于
+//      profile patch 里的 apiKeyEnv（面板里的选择是最新意图）。
+
+/** 合法凭据条目名：POSIX shell 标识符，与 dsh-credentials 的 REF_PATTERN 一致。 */
+const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function dshHome() {
+  const fromEnv = process.env.DSH_HOME;
+  return typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : join(homedir(), ".dsh");
+}
+
+function choiceFile() {
+  return join(dshHome(), "dsh-commandcode-quota.json");
+}
+
+/** 面板里保存过的选择；没有或损坏时返回全 null（回落到 patch 配置）。 */
+function readChoice() {
+  try {
+    const parsed = JSON.parse(readFileSync(choiceFile(), "utf8"));
+    const pick = (v) => (typeof v === "string" && REF_PATTERN.test(v) ? v : null);
+    return { apiKeyEnv: pick(parsed?.apiKeyEnv), fallbackEnv: pick(parsed?.fallbackEnv) };
+  } catch {
+    return { apiKeyEnv: null, fallbackEnv: null };
+  }
+}
+
+function writeChoice(choice) {
+  const file = choiceFile();
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(choice, null, 2) + "\n", "utf8");
+}
+
+/**
+ * 列出 .credentials.yaml 里 refs: 段下的条目名。
+ * 只解析键、跳过一切值 —— 返回的是名字，不是密钥。
+ */
+function readCredentialEntries() {
+  let text;
+  try {
+    text = readFileSync(join(dshHome(), ".credentials.yaml"), "utf8");
+  } catch {
+    return [];
+  }
+  const names = [];
+  let inRefs = false;
+  let indent = -1;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^refs:\s*$/.test(line)) { inRefs = true; continue; }
+    if (!inRefs) continue;
+    if (line.trim().length === 0) continue;
+    const m = line.match(/^(\s+)([A-Za-z_][A-Za-z0-9_]*):/);
+    if (!m) {
+      if (/^\S/.test(line)) break; // 回到顶层键，refs 段结束
+      continue;
+    }
+    if (indent < 0) indent = m[1].length;
+    if (m[1].length === indent) names.push(m[2]);
+  }
+  return names;
+}
+
+/** 读取请求体（上限 8KB，够放两个条目名）。 */
+function readBody(req, limit = 8192) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > limit) {
+        reject(new Error("请求体过大"));
+        req.destroy?.();
+      }
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
 // --- plugin ------------------------------------------------------------------
 
 function apply(ctx, config) {
-  const account = normalizeAccount(config);
+  const base = normalizeAccount(config);
   const timeoutMs = Number.isFinite(config?.timeoutMs) && config.timeoutMs > 0
     ? config.timeoutMs
     : DEFAULT_TIMEOUT_MS;
+
+  // 每次请求重新算：面板里刚改过选择就立刻生效，不必重载插件。
+  function currentAccount() {
+    const saved = readChoice();
+    return {
+      ...base,
+      apiKeyEnv: saved.apiKeyEnv ?? base.apiKeyEnv,
+      fallbackEnv: saved.fallbackEnv ?? base.fallbackEnv
+    };
+  }
 
   function registerHttp(host, targetCtx) {
     targetCtx.effect(() => host.register({
@@ -271,13 +368,13 @@ function apply(ctx, config) {
           // scope=quick: 只查响应快的 credits, 用量/订阅用缓存回填 (客户端先渲染再补全)
           const scope = readQuery(req, "scope");
 
-          const options = await resolveAccountOptions(ctx, account);
+          const options = await resolveAccountOptions(ctx, currentAccount());
           const meta = { ok: true };
           if (options.apiKey.length === 0) {
             sendJson(res, 200, {
               ...meta,
               ok: false,
-              error: `未配置 API key (尝试过: ${options.triedEnvs.join(", ") || "无"}); 请在 ~/.dsh/.credentials.yaml 中配置`,
+              error: `未配置 API key (尝试过: ${options.triedEnvs.join(", ") || "无"})。用面板上方的「凭据条目」选一个已有条目，或在 DSH 设置 → 凭据里添加`,
               keyConfigured: false
             });
             return;
@@ -291,6 +388,47 @@ function apply(ctx, config) {
         } catch (error) {
           sendJson(res, 500, { ok: false, error: `仪表盘请求失败: ${String(error)}` });
         }
+      }
+    }));
+
+    // 凭据条目：GET 列出候选 + 当前选择；POST 保存选择。
+    // 无论如何都可用 —— 面板没配 key 时正是最需要它的时候。
+    targetCtx.effect(() => host.register({
+      kind: "exact",
+      path: "/__dsh-commandcode-quota/credentials",
+      handler: async (req, res) => {
+        if (req.method === "GET") {
+          const account = currentAccount();
+          sendJson(res, 200, {
+            ok: true,
+            entries: readCredentialEntries(),
+            apiKeyEnv: account.apiKeyEnv,
+            fallbackEnv: account.fallbackEnv,
+            chosen: readChoice()
+          });
+          return;
+        }
+        if (req.method === "POST") {
+          try {
+            const parsed = JSON.parse((await readBody(req)) || "{}");
+            const next = { apiKeyEnv: null, fallbackEnv: null };
+            for (const key of ["apiKeyEnv", "fallbackEnv"]) {
+              const value = parsed?.[key];
+              if (value === null || value === undefined || value === "") continue;
+              if (typeof value !== "string" || !REF_PATTERN.test(value)) {
+                sendJson(res, 400, { ok: false, error: `凭据条目名不合法: ${JSON.stringify(value)}` });
+                return;
+              }
+              next[key] = value;
+            }
+            writeChoice(next);
+            sendJson(res, 200, { ok: true, ...next });
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: `保存失败: ${String(error)}` });
+          }
+          return;
+        }
+        sendJson(res, 405, { error: "method not allowed" });
       }
     }));
   }

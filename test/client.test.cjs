@@ -13,9 +13,9 @@ const fixture = {
   // 月度窗口的重置时间取自订阅周期末，是 ISO 字符串而非毫秒数
   subscription: { status: "active", currentPeriodEnd: new Date(Date.now() + 20 * 86400000).toISOString() },
 };
-function mount({ open = true, data = fixture, failed = false } = {}) {
+function mount({ open = true, data = fixture, failed = false, creds = null } = {}) {
   let registration, component, slot, stateIndex = 0;
-  const values = [open, data, false, null];
+  const values = [open, data, false, null, creds || { entries: [], apiKeyEnv: null, saving: false, error: null }];
   const updates = [], callbacks = [], effects = [], requests = [], timers = [];
   const React = {
     Fragment: "fragment",
@@ -62,7 +62,7 @@ async function main() {
   const view = mount();
   const buttons = view.nodes.filter(node => node.type === "button");
   assert.equal(buttons.length, 3, "只保留状态栏、刷新和关闭按钮，不应存在账号切换按钮");
-  assert.equal(view.stateIndex, 4, "不再维护选中账号状态");
+  assert.equal(view.stateIndex, 5, "状态：面板开合 / 数据 / 加载 / 错误 / 凭据条目");
   assert.equal(view.callbacks[0].deps.length, 0);
   for (const label of ["5h 10%", "周 20%", "月 30%", "$70.00", "5 小时窗口", "每周窗口", "每月窗口"]) {
     assert.ok(view.texts.includes(label), `保留额度展示：${label}`);
@@ -76,9 +76,46 @@ async function main() {
     `月度应显示天级倒计时与到期日，实际：${resetTexts.join(" | ")}`,
   );
   await buttons.find(node => node.props.title === "刷新").props.onClick();
-  assert.deepEqual(view.requests.map(req => req.url), ["/__dsh-commandcode-quota/dashboard?scope=quick", "/__dsh-commandcode-quota/dashboard"]);
+  assert.deepEqual(view.requests.filter((r) => r.url.includes("/dashboard")).map((r) => r.url), [
+    "/__dsh-commandcode-quota/dashboard?scope=quick",
+    "/__dsh-commandcode-quota/dashboard",
+  ]);
   assert.ok(view.requests.every(req => req.options.cache === "no-store"));
   assert.ok(!view.updates.some(update => update.index > 3));
+
+  // 这个 mock 的 useEffect 只记录不执行，所以在这里手动触发挂载逻辑：
+  // 挂载时必须顺带拉一次凭据条目，下拉才会有候选
+  view.effects[0]();
+  assert.ok(
+    view.requests.some((r) => r.url === "/__dsh-commandcode-quota/credentials"),
+    "挂载时应拉取凭据条目列表",
+  );
+
+  // 凭据条目下拉存在的意义就是「没配 key 时也能选」，所以每种面板状态都必须能看到它
+  const pickerState = {
+    entries: ["BAILIAN_API_KEY", "COMMANDCODE2_API_KEY"],
+    apiKeyEnv: "COMMANDCODE2_API_KEY",
+    saving: false,
+    error: null,
+  };
+  for (const [label, options] of [
+    ["正常态", {}],
+    ["报错态", { failed: true }],
+    ["无数据态", { data: null }],
+  ]) {
+    const view2 = mount({ ...options, creds: pickerState });
+    const selects = view2.nodes.filter((n) => n.type === "select");
+    assert.equal(selects.length, 1, `${label}下应能看到凭据条目下拉`);
+    const values = view2.nodes.filter((n) => n.type === "option").map((o) => o.props.value);
+    assert.deepEqual(values, ["", "BAILIAN_API_KEY", "COMMANDCODE2_API_KEY"], `${label}下的候选项不正确：${values.join(",")}`);
+    assert.equal(selects[0].props.value, "COMMANDCODE2_API_KEY", `${label}下应选中当前条目`);
+  }
+  // 配置指向一个尚未添加的条目时也要出现在候选里，否则下拉会显示成空白
+  const orphan = mount({ creds: { entries: ["OTHER_KEY"], apiKeyEnv: "MISSING_KEY", saving: false, error: null } });
+  assert.deepEqual(
+    orphan.nodes.filter((n) => n.type === "option").map((o) => o.props.value),
+    ["", "MISSING_KEY", "OTHER_KEY"],
+  );
   const timerView = mount({ open: false, data: null });
   assert.equal(timerView.nodes.filter(node => node.type === "button").length, 1);
   const cleanup = timerView.effects[0]();

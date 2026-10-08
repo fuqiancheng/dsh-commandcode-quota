@@ -17,6 +17,7 @@ window.__ModuleLoader__.load({
     const { useCallback, useEffect, useState, useRef } = React;
 
     const FETCH_URL = "/__dsh-commandcode-quota/dashboard";
+    const CREDENTIALS_URL = "/__dsh-commandcode-quota/credentials";
     // 每 3 分钟后台自动刷新一次余额(面板开/关都刷新, 打开时看到的就是最新数据)
     const REFRESH_MS = 3 * 60 * 1000;
 
@@ -306,6 +307,55 @@ window.__ModuleLoader__.load({
           `剩余 ${fmtCurrency(remaining)} · 重置 ${fmtDuration(resetAt)}${fmtResetDay(resetAt)}`));
     }
 
+    // ---- 凭据条目选择 ------------------------------------------------------------
+    //
+    // 这个选择器在整个面板里【恒定渲染】—— 加载中、报错、甚至完全没数据时都在。
+    // 因为「一个 key 都没配」正是最需要它的时刻：用户在这里选一个已有条目即可，
+    // 不必去手改 profile patch。
+
+    function CredentialPicker({ state, onPick }) {
+      const safe = state || {};
+      const entries = Array.isArray(safe.entries) ? safe.entries : [];
+      const current = safe.apiKeyEnv ?? null;
+      // 当前值可能不在候选里（配置指向了尚未添加的条目），补一项，避免下拉显示空白
+      const options = current && !entries.includes(current) ? [current, ...entries] : entries;
+
+      return React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "9px 16px",
+          borderBottom: `1px solid ${T.borderL}`,
+          fontSize: 11.5,
+          color: T.label3,
+        },
+      },
+        React.createElement("span", { style: { whiteSpace: "nowrap" } }, "凭据条目"),
+        React.createElement("select", {
+          value: current ?? "",
+          disabled: Boolean(safe.saving),
+          title: "选择用哪条凭据查询额度",
+          onChange: (event) => onPick(event.target.value),
+          style: {
+            flex: 1,
+            minWidth: 0,
+            padding: "4px 6px",
+            fontSize: 11.5,
+            fontFamily: "inherit",
+            color: T.label2,
+            background: T.bg2,
+            border: `1px solid ${T.border}`,
+            borderRadius: 8,
+            cursor: safe.saving ? "default" : "pointer",
+          },
+        },
+          React.createElement("option", { value: "" }, "（未设置）"),
+          options.map((name) => React.createElement("option", { key: name, value: name }, name))),
+        safe.saving ? React.createElement("span", null, "…") : null,
+        safe.error ? React.createElement("span", { style: { color: T.error } }, safe.error) : null);
+    }
+
     // ---- 面板内容 ----------------------------------------------------------------
 
     function DashboardBody({ data, loading, error }) {
@@ -496,6 +546,8 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState(null);
       const timerRef = useRef(null);
+      // 凭据条目：与 data / error 完全解耦 —— 这样面板报「没配 key」时依然能切换
+      const [creds, setCreds] = useState({ entries: [], apiKeyEnv: null, saving: false, error: null });
 
       const refresh = useCallback(async () => {
         const fullUrl = FETCH_URL;
@@ -526,12 +578,46 @@ window.__ModuleLoader__.load({
         }
       }, []);
 
+      const loadCredentials = useCallback(async () => {
+        try {
+          const res = await fetch(CREDENTIALS_URL, { cache: "no-store" });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const body = await res.json();
+          setCreds((prev) => ({
+            ...prev,
+            entries: Array.isArray(body.entries) ? body.entries : [],
+            apiKeyEnv: body.apiKeyEnv ?? null,
+            error: null,
+          }));
+        } catch (reason) {
+          setCreds((prev) => ({ ...prev, error: String(reason) }));
+        }
+      }, []);
+
+      const pickCredential = useCallback(async (name) => {
+        setCreds((prev) => ({ ...prev, saving: true, error: null }));
+        try {
+          const res = await fetch(CREDENTIALS_URL, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ apiKeyEnv: name || null }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const body = await res.json();
+          setCreds((prev) => ({ ...prev, apiKeyEnv: body.apiKeyEnv ?? null, saving: false }));
+          await refresh(); // 换完立刻按新条目重新查一次
+        } catch (reason) {
+          setCreds((prev) => ({ ...prev, saving: false, error: String(reason) }));
+        }
+      }, [refresh]);
+
       useEffect(() => {
+        loadCredentials();
         refresh();
         // 每 3 分钟自动查询一次余额(面板打开时也刷新)
         timerRef.current = setInterval(() => refresh(), REFRESH_MS);
         return () => { if (timerRef.current) clearInterval(timerRef.current); };
-      }, [refresh]);
+      }, [loadCredentials, refresh]);
 
       function pctOf(win) {
         if (!win || typeof win.used !== "number" || typeof win.cap !== "number" || win.cap <= 0) return null;
@@ -642,6 +728,7 @@ window.__ModuleLoader__.load({
                 onMouseEnter: (e) => Object.assign(e.currentTarget.style, iconBtnHover),
                 onMouseLeave: (e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = T.label3; },
               }, React.createElement(IconClose)))),
+          React.createElement(CredentialPicker, { state: creds, onPick: pickCredential }),
           React.createElement(DashboardBody, { data, loading, error })) : null);
     }
 
