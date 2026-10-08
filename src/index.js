@@ -339,6 +339,19 @@ function readBody(req, limit = 8192) {
 // --- plugin ------------------------------------------------------------------
 
 /**
+ * 挑出要展示的凭据条目。
+ *
+ * 口径：对不上模型供应商的条目说明没在用它，不必占位置。
+ * 但如果一个都对不上（凭据库还没和任何 provider 关联），就退回全部 ——
+ * 否则下拉是空的，反而没法选。
+ */
+function pickEntries(refs, labels) {
+  const all = refs.map((ref) => ({ ref, provider: labels[ref] ?? null }));
+  const matched = all.filter((entry) => entry.provider);
+  return matched.length > 0 ? matched : all;
+}
+
+/**
  * 凭据条目名 → 模型供应商显示名。
  *
  * 这层对应本来就存在于模型配置里（provider.apiKeyEnv 指向条目名），所以读
@@ -434,8 +447,8 @@ function apply(ctx, config) {
           const labels = readProviderLabels(ctx);
           sendJson(res, 200, {
             ok: true,
-            // 条目名 + 它对应的模型供应商显示名（没有对应供应商就是 null）
-            entries: readCredentialEntries().map((ref) => ({ ref, provider: labels[ref] ?? null })),
+            // 只列能对上模型供应商的条目（口径见 pickEntries）
+            entries: pickEntries(readCredentialEntries(), labels),
             apiKeyEnv: account.apiKeyEnv,
             fallbackEnv: account.fallbackEnv,
             chosen: readChoice()

@@ -181,7 +181,7 @@ async function main() {
   assert.deepEqual(listed.body.entries, [
     { ref: "PRIMARY_TEST_KEY", provider: null },
     { ref: "FALLBACK_TEST_KEY", provider: null },
-  ], "应只列出 refs 段下的条目名（未配置 llm-pi-ai 时 provider 为 null）");
+  ], "一个都对不上供应商时回退显示全部，免得多拉是空的");
   assert.equal(listed.body.apiKeyEnv, "PRIMARY_TEST_KEY");
   for (const secret of ["fixture-primary-value", "fixture-fallback-value"]) {
     assert.ok(!listed.raw.includes(secret), `凭据端点绝不能回值：${secret}`);
@@ -223,6 +223,16 @@ async function main() {
   const broken = await mount(load(), config, {}, false, { describe() { throw new Error("boom"); } }).request(CREDS);
   assert.equal(broken.status, 200, "settings 读不到时应降级而不是报错");
   assert.deepEqual(broken.body.entries.map((e) => e.provider), [null, null]);
+  // 只有部分条目对得上时，只列出对得上的 —— 对不上的说明用户没在用它
+  const partial = await mount(load(), config, {}, false, {
+    describe: () => ([{
+      ns: "llm-pi-ai",
+      user: { providers: { cerebras: { displayName: "bailian", apiKeyEnv: "FALLBACK_TEST_KEY" } } },
+    }]),
+  }).request(CREDS);
+  assert.deepEqual(partial.body.entries, [
+    { ref: "FALLBACK_TEST_KEY", provider: "bailian" },
+  ], "只应列出对得上模型供应商的条目");
 
   // 包自检：声明、注册 id 与 bundle 补丁层三者必须一致。
   const manifest = JSON.parse(fs.readFileSync(join(plugin, "package.json"), "utf8"));
