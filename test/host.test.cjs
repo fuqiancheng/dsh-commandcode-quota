@@ -39,7 +39,7 @@ function mount(runtime, config = {}, keys = {}, lazy = false) {
   assert.equal(runtime.host.name, "dsh-commandcode-quota");
   assert.deepEqual(Array.from(runtime.host.inject), ["credentials"]);
   assert.equal(route.kind, "exact");
-  assert.equal(route.path, "/__cc-usage/dashboard");
+  assert.equal(route.path, "/__dsh-commandcode-quota/dashboard");
   return {
     refs,
     async request(url = route.path, method = "GET") {
@@ -73,7 +73,7 @@ async function main() {
   assert.ok(runtime.requests.every(req => req.options.headers.authorization === "Bearer fixture-primary"));
   assert.deepEqual(app.refs, ["PRIMARY_TEST_KEY"]);
   runtime.requests.length = 0;
-  const quick = await app.request("/__cc-usage/dashboard?scope=quick");
+  const quick = await app.request("/__dsh-commandcode-quota/dashboard?scope=quick");
   assert.equal(runtime.requests.length, 1);
   assert.equal(new URL(runtime.requests[0].url).pathname, "/alpha/billing/credits");
   assert.equal(quick.body.usage.totalMonthlyCredits, 30);
@@ -92,7 +92,7 @@ async function main() {
   assert.equal(runtime.requests.length, 0);
   const fallbackRuntime = load();
   const fallback = mount(fallbackRuntime, config, { FALLBACK_TEST_KEY: "fixture-fallback" }, true);
-  assert.equal((await fallback.request("/__cc-usage/dashboard?scope=quick")).body.keyConfigured, true);
+  assert.equal((await fallback.request("/__dsh-commandcode-quota/dashboard?scope=quick")).body.keyConfigured, true);
   assert.deepEqual(fallback.refs, ["PRIMARY_TEST_KEY", "FALLBACK_TEST_KEY"]);
   assert.equal(fallbackRuntime.requests[0].options.headers.authorization, "Bearer fixture-fallback");
   const emptyRuntime = load();
@@ -108,13 +108,13 @@ async function main() {
     if (++attempts === 1) throw new TypeError("模拟连接失败");
     return { status: 200, json: async () => responses[new URL(url).pathname] };
   });
-  assert.equal((await mount(retryRuntime, config, { PRIMARY_TEST_KEY: "fixture-primary" }).request("/__cc-usage/dashboard?scope=quick")).body.ok, true);
+  assert.equal((await mount(retryRuntime, config, { PRIMARY_TEST_KEY: "fixture-primary" }).request("/__dsh-commandcode-quota/dashboard?scope=quick")).body.ok, true);
   assert.equal(attempts, 2);
   const timeoutRuntime = load();
   timeoutRuntime.respond((url, options) => new Promise((resolve, reject) => {
     options.signal.addEventListener("abort", () => reject(new Error("模拟超时")), { once: true });
   }));
-  assert.equal((await mount(timeoutRuntime, { ...config, timeoutMs: 5 }, { PRIMARY_TEST_KEY: "fixture-primary" }).request("/__cc-usage/dashboard?scope=quick")).body.ok, false);
+  assert.equal((await mount(timeoutRuntime, { ...config, timeoutMs: 5 }, { PRIMARY_TEST_KEY: "fixture-primary" }).request("/__dsh-commandcode-quota/dashboard?scope=quick")).body.ok, false);
   assert.equal(timeoutRuntime.requests.length, 1, "主动超时不重试");
   // 包自检：声明、注册 id 与 bundle 补丁层三者必须一致。
   const manifest = JSON.parse(fs.readFileSync(join(plugin, "package.json"), "utf8"));
@@ -125,6 +125,9 @@ async function main() {
     patch.includes(`id: ${manifest.name}`) && patch.includes(`name: '${manifest.name}'`),
     "bundle 补丁的注册 id 与包名必须一致",
   );
+  // 发版时最容易漏的一处：user-agent 里的版本号要与 package.json 同步。
+  const uaVersion = source.match(/"user-agent":\s*"[^"]*\/([^"]+)"/)?.[1];
+  assert.equal(uaVersion, manifest.version, "user-agent 版本必须与 package.json 的 version 一致");
   console.log("通过：单账号响应、主/回退凭据、完整/快速查询、缓存、401、405、重试和超时。");
   console.log("通过：宿主端导出、路由、包名与 bundle 补丁层一致。");
 }

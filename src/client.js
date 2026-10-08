@@ -1,6 +1,6 @@
 // dsh-commandcode-quota: CLIENT half — Command Code 余额额度仪表盘 (v3 可读性修复版)。
 //
-// 在 shell.overlay 槽位挂一个右下角浮动徽章; 点击展开仪表盘面板:
+// 在 composer dock 槽位挂一行常驻额度状态栏; 点击展开仪表盘面板:
 //   - Hero: 余额大数字 + 订阅状态徽章
 //   - 限额: 每月 / 5小时 / 每周 进度卡片 (used vs cap + 重置时间)
 //   - 用量: 三格统计卡片 (总消耗 / 请求数 / tokens)
@@ -16,7 +16,7 @@ window.__ModuleLoader__.load({
     const React = require("react");
     const { useCallback, useEffect, useState, useRef } = React;
 
-    const FETCH_URL = "/__cc-usage/dashboard";
+    const FETCH_URL = "/__dsh-commandcode-quota/dashboard";
     // 每 3 分钟后台自动刷新一次余额(面板开/关都刷新, 打开时看到的就是最新数据)
     const REFRESH_MS = 3 * 60 * 1000;
 

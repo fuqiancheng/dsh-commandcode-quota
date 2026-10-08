@@ -4,8 +4,8 @@
  * 通过 Command Code 官方 API 读取余额与限额数据, 在 DSH Web 界面提供
  * 一个与 OpenCode 余额查询类似的单账号仪表盘。
  *
- *   GET /__cc-usage/dashboard              → 余额 + 限额 + 用量
- *   GET /__cc-usage/dashboard?scope=quick  → 余额优先，其余字段用缓存回填
+ *   GET /__dsh-commandcode-quota/dashboard              → 余额 + 限额 + 用量
+ *   GET /__dsh-commandcode-quota/dashboard?scope=quick  → 余额优先，其余字段用缓存回填
  *
  * 数据源 (均为 Authorization: Bearer <key> 的 GET 请求):
  *   GET {base}/alpha/billing/credits        余额 & 窗口限额
@@ -67,7 +67,7 @@ async function ccFetch(baseURL, path, apiKey, timeoutMs) {
       headers: {
         authorization: `Bearer ${apiKey}`,
         accept: "application/json",
-        "user-agent": "cc-usage-dsh-plugin/0.1.0"
+        "user-agent": "dsh-commandcode-quota/0.2.0"
       },
       signal: controller.signal
     });
@@ -260,7 +260,7 @@ function apply(ctx, config) {
   function registerHttp(host, targetCtx) {
     targetCtx.effect(() => host.register({
       kind: "exact",
-      path: "/__cc-usage/dashboard",
+      path: "/__dsh-commandcode-quota/dashboard",
       handler: async (req, res) => {
         if (req.method !== "GET") {
           sendJson(res, 405, { error: "method not allowed" });

@@ -66,7 +66,7 @@ async function main() {
     assert.ok(view.texts.includes(label), `保留额度展示：${label}`);
   }
   await buttons.find(node => node.props.title === "刷新").props.onClick();
-  assert.deepEqual(view.requests.map(req => req.url), ["/__cc-usage/dashboard?scope=quick", "/__cc-usage/dashboard"]);
+  assert.deepEqual(view.requests.map(req => req.url), ["/__dsh-commandcode-quota/dashboard?scope=quick", "/__dsh-commandcode-quota/dashboard"]);
   assert.ok(view.requests.every(req => req.options.cache === "no-store"));
   assert.ok(!view.updates.some(update => update.index > 3));
   const timerView = mount({ open: false, data: null });
