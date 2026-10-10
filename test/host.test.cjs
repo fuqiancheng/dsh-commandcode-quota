@@ -252,6 +252,14 @@ async function main() {
   // 发版时最容易漏的一处：user-agent 里的版本号要与 package.json 同步。
   const uaVersion = source.match(/"user-agent":\s*"[^"]*\/([^"]+)"/)?.[1];
   assert.equal(uaVersion, manifest.version, "user-agent 版本必须与 package.json 的 version 一致");
+  // 官方包的 peer 范围必须带显式预发布分支。node-semver 只让「相同 major.minor.patch
+  // 元组、且自身带预发布标签」的比较符放行预发布版本，所以 '*' 和 '>=0.0.0-0' 都匹配
+  // 不到任何 0.x.0-rc.y —— 而那正是 harness 官方包的版本形态。
+  const peerRange = manifest.peerDependencies["@deepseek-ai/dsh-credentials"];
+  assert.ok(
+    typeof peerRange === "string" && /-0/.test(peerRange),
+    `官方包 peer 范围必须含显式预发布分支（当前: ${peerRange}）`,
+  );
   console.log("通过：单账号响应、主/回退凭据、完整/快速查询、缓存、401、405、重试和超时。");
   console.log("通过：凭据端点只回条目名、翻译供应商名、保存后覆盖 patch 配置、非法名被拒、无 key 时依然可用。");
   console.log("通过：宿主端导出、路由、包名与 bundle 补丁层一致。");
