@@ -1,6 +1,6 @@
 {
   "name": "dsh-commandcode-quota",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Command Code balance and quota panel for DeepSeek Harness: a status row under the composer showing balance and the 5-hour, weekly and monthly windows.",
   "type": "module",
   "license": "MIT",
