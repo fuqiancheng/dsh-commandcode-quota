@@ -38,7 +38,6 @@ function load() {
     join, dirname,
     homedir: () => fakeHome,
     process: { env: { DSH_HOME: fakeHome } },
-    credentialRef: (ref) => ref,
     fetch: async (url, options) => { requests.push({ url, options }); return reply(url, options); },
   });
   vm.runInContext(source.replace(/^import .*;\r?$/gm, "").replace(/^export .*;\r?$/gm, "") +
@@ -260,6 +259,12 @@ async function main() {
     typeof peerRange === "string" && /-0/.test(peerRange),
     `官方包 peer 范围必须含显式预发布分支（当前: ${peerRange}）`,
   );
+  // 宿主端不得再有 @deepseek-ai 的【运行时导入】：插件真实路径可能在 profile 之外，
+  // 该包只能靠 profiles/node_modules 下的链接解析，而 DSH 升级会清掉那些链接，
+  // 导入即抛 ERR_MODULE_NOT_FOUND，整个插件（含界面）都不上线（2026-10-17 真挂过一次）。
+  // peer 声明只用于兼容性判定（读 package.json），不参与运行时解析，因此保留。
+  const runtimeHarnessImports = source.match(/^import[^\n]*from\s+"@deepseek-ai\/[^"]+";?$/gm) ?? [];
+  assert.deepEqual(runtimeHarnessImports, [], "宿主端不得 import harness 包（会在 profile 之外解析失败）");
   console.log("通过：单账号响应、主/回退凭据、完整/快速查询、缓存、401、405、重试和超时。");
   console.log("通过：凭据端点只回条目名、翻译供应商名、保存后覆盖 patch 配置、非法名被拒、无 key 时依然可用。");
   console.log("通过：宿主端导出、路由、包名与 bundle 补丁层一致。");

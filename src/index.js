@@ -24,7 +24,6 @@
  *
  * ESM module format (cordis bundle rule): named exports apply/inject/name.
  */
-import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -264,6 +263,27 @@ async function resolveAccountOptions(ctx, account) {
 
 /** 合法凭据条目名：POSIX shell 标识符，与 dsh-credentials 的 REF_PATTERN 一致。 */
 const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * 把环境变量名校验成凭据引用（等价于 @deepseek-ai/dsh-credentials 的 credentialRef）。
+ *
+ * 为什么本地实现而不 import 那个包：那是【运行时导入】，而插件的真实路径未必在
+ * profile 的 node_modules 里面（本地 junction 安装就是这种情况）。此时
+ * "@deepseek-ai/dsh-credentials" 只能靠 profiles/node_modules 下的链接解析，
+ * 而 DSH 升级会清空那里的 @deepseek-ai —— 导入立刻抛 ERR_MODULE_NOT_FOUND，
+ * 整个宿主端（连带界面面板）都不会上线；市场里的普通用户同样会踩到。
+ * 校验规则只有一行正则，本地实现即可让插件零 harness 运行时依赖。
+ *
+ * @param {unknown} value 候选引用，如 BAILIAN_API_KEY。
+ * @returns {string} 通过校验的引用本身。
+ * @throws {TypeError} 名字不符合 shell 标识符语法时。
+ */
+function credentialRef(value) {
+  if (typeof value !== "string" || !REF_PATTERN.test(value)) {
+    throw new TypeError(`credential ref "${String(value)}" must match ${String(REF_PATTERN)}`);
+  }
+  return value;
+}
 
 function dshHome() {
   const fromEnv = process.env.DSH_HOME;
