@@ -20,6 +20,8 @@
     "locale/",
     "test/",
     "scripts/",
+    "assets/",
+    "screenshots.json",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
