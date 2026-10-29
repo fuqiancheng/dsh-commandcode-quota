@@ -13,9 +13,9 @@ const fixture = {
   // 月度窗口的重置时间取自订阅周期末，是 ISO 字符串而非毫秒数
   subscription: { status: "active", currentPeriodEnd: new Date(Date.now() + 20 * 86400000).toISOString() },
 };
-function mount({ open = true, data = fixture, failed = false, creds = null } = {}) {
+function mount({ open = true, data = fixture, failed = false, creds = null, gearOpen = false } = {}) {
   let registration, component, slot, stateIndex = 0;
-  const values = [open, data, false, null, creds || { entries: [], apiKeyEnv: null, saving: false, error: null }];
+  const values = [open, data, false, null, creds || { entries: [], apiKeyEnv: null, saving: false, error: null }, gearOpen, null];
   const updates = [], callbacks = [], effects = [], requests = [], timers = [];
   const React = {
     Fragment: "fragment",
@@ -61,8 +61,8 @@ function mount({ open = true, data = fixture, failed = false, creds = null } = {
 async function main() {
   const view = mount();
   const buttons = view.nodes.filter(node => node.type === "button");
-  assert.equal(buttons.length, 3, "只保留状态栏、刷新和关闭按钮，不应存在账号切换按钮");
-  assert.equal(view.stateIndex, 5, "状态：面板开合 / 数据 / 加载 / 错误 / 凭据条目");
+  assert.equal(buttons.length, 4, "状态栏 + 齿轮 + 刷新 + 关闭，不应存在账号切换按钮");
+  assert.equal(view.stateIndex, 7, "状态：面板开合 / 数据 / 加载 / 错误 / 凭据条目 / 凭据设置 / 配色");
   assert.equal(view.callbacks[0].deps.length, 0);
   for (const label of ["5h 10%", "周 20%", "月 30%", "$70.00", "5 小时窗口", "每周窗口", "每月窗口"]) {
     assert.ok(view.texts.includes(label), `保留额度展示：${label}`);
@@ -107,7 +107,7 @@ async function main() {
     ["报错态", { failed: true }],
     ["无数据态", { data: null }],
   ]) {
-    const view2 = mount({ ...options, creds: pickerState });
+    const view2 = mount({ ...options, creds: pickerState, gearOpen: true });
     const selects = view2.nodes.filter((n) => n.type === "select");
     assert.equal(selects.length, 1, `${label}下应能看到凭据条目下拉`);
     const opts = view2.nodes.filter((n) => n.type === "option");
@@ -126,13 +126,13 @@ async function main() {
     assert.equal(selects[0].props.value, "COMMANDCODE2_API_KEY", `${label}下应选中当前条目`);
   }
   // 宿主端读不到供应商时会退化成纯字符串数组，也必须照常工作
-  const plain = mount({ creds: { entries: ["BAILIAN_API_KEY"], apiKeyEnv: null, saving: false, error: null } });
+  const plain = mount({ creds: { entries: ["BAILIAN_API_KEY"], apiKeyEnv: null, saving: false, error: null }, gearOpen: true });
   assert.deepEqual(
     plain.nodes.filter((n) => n.type === "option").map((o) => o.children[0]),
     ["（未设置）", "BAILIAN_API_KEY"],
   );
   // 配置指向一个尚未添加的条目时也要出现在候选里，否则下拉会显示成空白
-  const orphan = mount({ creds: { entries: [{ ref: "OTHER_KEY", provider: null }], apiKeyEnv: "MISSING_KEY", saving: false, error: null } });
+  const orphan = mount({ creds: { entries: [{ ref: "OTHER_KEY", provider: null }], apiKeyEnv: "MISSING_KEY", saving: false, error: null }, gearOpen: true });
   assert.deepEqual(
     orphan.nodes.filter((n) => n.type === "option").map((o) => o.props.value),
     ["", "MISSING_KEY", "OTHER_KEY"],
@@ -140,9 +140,12 @@ async function main() {
   const timerView = mount({ open: false, data: null });
   assert.equal(timerView.nodes.filter(node => node.type === "button").length, 1);
   const cleanup = timerView.effects[0]();
+  // 分层轮询: 余额 3 分钟一次, 用量/订阅 30 分钟一次(重查询不该跟余额同频)
   assert.equal(timerView.timers[0].ms, 3 * 60 * 1000);
+  assert.equal(timerView.timers[1].ms, 30 * 60 * 1000);
   cleanup();
-  assert.equal(timerView.timers[1].cleared, 1);
+  assert.equal(timerView.timers[2].cleared, 1);
+  assert.equal(timerView.timers[3].cleared, 1);
   const failure = mount({ failed: true });
   await failure.callbacks[0].fn();
   assert.ok(failure.updates.some(update => update.index === 3 && update.value.includes("HTTP 503")));

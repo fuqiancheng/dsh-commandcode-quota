@@ -6,7 +6,12 @@ The plugin renders a compact status row directly underneath the DSH composer:
 
 - **5-hour, weekly and monthly usage windows** as live percentages
 - **Available balance**
-- Click the row to expand the full breakdown: used / limit / remaining / reset time, total spend, tokens, success rate, subscription and account information
+- Click the row to expand the full breakdown: used / limit / remaining / reset time, total spend, tokens, daily spend, subscription and account information
+- **Three status lights** — normal / low balance / exhausted. The current one lights up and the others dim, driven by the official `belowThreshold` and `exceeded` fields; hover any light for an explanation
+- **The bar color follows usage**: cool while usage is low, warming up past 55%, red near the limit, with an internal gradient
+- **Six bar palettes** to choose from in the gear settings; the choice is remembered
+- **Overrun warning**: based on this period's daily average, the monthly card adds a line like “~N days until empty” when the remaining credit will not last until reset
+- A skeleton screen shows on first load so the layout does not jump when data arrives
 
 It is **single-account by design**. There is no account switcher, and your API key never reaches the browser.
 
@@ -76,12 +81,14 @@ The package has two halves:
 - **Host half** (`src/index.js`) resolves the key through the DSH credentials service and registers a read-only HTTP endpoint that fans out to the Command Code API, then aggregates the responses into a single payload. The key is read on every request and never serialized to the client.
 - **Client half** (`src/client.js`) registers a status row into the composer dock slot, polls the host endpoint, and renders it with DSH theme tokens so light and dark themes both work.
 
+Polling is tiered: balance every 3 minutes (cheap), usage and subscriptions every 30 minutes (expensive). Polling pauses while the page is hidden and refreshes fully when it comes back.
+
 Data comes from four Command Code endpoints, each called with `Authorization: Bearer <key>`:
 
 | Endpoint | Used for |
 |---|---|
 | `GET /alpha/billing/credits` | Balance and the 5-hour / weekly limits |
-| `GET /alpha/usage/summary` | Spend, tokens and success rate |
+| `GET /alpha/usage/summary` | Spend, tokens and the period start (for daily spend) |
 | `GET /alpha/billing/subscriptions` | Subscription status and period boundaries |
 | `GET /alpha/whoami` | Account information |
 
@@ -91,8 +98,11 @@ The monthly window is composed from the usage total plus the remaining credits, 
 
 - The four requests run in parallel, so total latency is the slowest one rather than the sum.
 - A connection-level failure is retried once; a deliberate timeout is not retried.
-- On failure the panel falls back to the last successful value (kept in-process for 6 hours) and reports it as stale.
+- On failure the panel falls back to the last successful value (kept for 6 hours) and reports it as stale.
+- That snapshot is also written to `$DSH_HOME/dsh-commandcode-quota-cache.json`, so it **survives a restart**. It holds quota fields only — no account details, and never the key itself.
+- The snapshot is keyed by a fingerprint of the API key, so switching keys never reuses another account's data.
 - An HTTP 401 is never masked by cached data, because it means the credential itself is wrong.
+- When **all four** endpoints fail, the response carries a readable reason and the panel shows an error rather than a blank box.
 
 ## Development
 

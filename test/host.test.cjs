@@ -138,11 +138,22 @@ async function main() {
   const stale = await app.request();
   assert.equal(stale.body.balance.monthlyCredits, 70);
   assert.equal(stale.body.stale.length, 4);
+  // 落盘缓存: 模拟 DSH 重启(新 context, 内存缓存为空)后 credits 失败,
+  // 应该能从磁盘快照回退余额, 而不是让面板空白。
+  const restarted = load();
+  restarted.respond(async () => ({ status: 503, json: async () => ({}) }));
+  const restored = await mount(restarted, config, { PRIMARY_TEST_KEY: "fixture-primary" })
+    .request(DASHBOARD + "?scope=quick");
+  assert.equal(restored.body.balance.monthlyCredits, 70, "重启后应能从落盘缓存回退余额");
+  assert.equal(restored.body.stale.length, 1);
   runtime.respond(async () => ({ status: 401, json: async () => ({}) }));
   const unauthorized = await app.request();
   assert.equal(unauthorized.body.ok, false);
   assert.equal(unauthorized.body.balance, undefined);
   assert.equal(unauthorized.body.errors.length, 4);
+  // 全失败必须带出可读原因, 否则客户端只拿到 ok:false, 面板会渲染成空白
+  assert.ok(unauthorized.body.error.includes("查询失败"), "全失败时应带出可读原因");
+  assert.ok(unauthorized.body.error.includes("余额"), "失败原因应标明是哪个接口");
   runtime.requests.length = 0;
   assert.equal((await app.request(undefined, "POST")).status, 405);
   assert.equal(runtime.requests.length, 0);
@@ -172,6 +183,9 @@ async function main() {
   });
   assert.equal((await mount(retryRuntime, config, { PRIMARY_TEST_KEY: "fixture-primary" }).request(DASHBOARD + "?scope=quick")).body.ok, true);
   assert.equal(attempts, 2);
+  // 超时用例要求「冷启动且无任何可用缓存」: 先清掉落盘快照,
+  // 否则 hydrateCache 会让 credits 兜底成功, 就测不到 ok:false 了。
+  fs.rmSync(join(fakeHome, "dsh-commandcode-quota-cache.json"), { force: true });
   const timeoutRuntime = load();
   timeoutRuntime.respond((url, options) => new Promise((resolve, reject) => {
     options.signal.addEventListener("abort", () => reject(new Error("模拟超时")), { once: true });

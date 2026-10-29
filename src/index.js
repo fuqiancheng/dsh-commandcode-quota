@@ -25,6 +25,7 @@
  * ESM module format (cordis bundle rule): named exports apply/inject/name.
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -35,6 +36,14 @@ const DEFAULT_BASE_URL = "https://api.commandcode.ai";
 const DEFAULT_API_KEY_ENV = "COMMANDCODE_API_KEY";
 // Command Code 的 usage / subscriptions / whoami 实测要 8~20s, 8s 超时必然误杀。
 const DEFAULT_TIMEOUT_MS = 30000;
+
+// 落盘缓存文件名(与凭据选择文件同目录)。只存额度相关字段:
+// whoami 带邮箱等个人信息, 没有落盘价值, 不写进去。
+const CACHE_FILE_NAME = "dsh-commandcode-quota-cache.json";
+const PERSISTED_ENDPOINTS = ["credits", "usage", "subscriptions"];
+
+// 接口名 → 中文, 用于把失败原因写成一句人能看懂的话。
+const ENDPOINT_LABELS = { credits: "余额", usage: "用量", subscriptions: "订阅", whoami: "账户" };
 
 // --- HTTP helpers ------------------------------------------------------------
 
@@ -71,7 +80,7 @@ async function ccFetch(baseURL, path, apiKey, timeoutMs) {
       headers: {
         authorization: `Bearer ${apiKey}`,
         accept: "application/json",
-        "user-agent": "dsh-commandcode-quota/0.2.3"
+        "user-agent": "dsh-commandcode-quota/0.3.0"
       },
       signal: controller.signal
     });
@@ -142,17 +151,77 @@ const HANDLERS = {
  */
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const lastGood = new Map();
+// 已从磁盘灌入过缓存的 key 指纹, 避免每次请求都读盘
+let hydratedFor = null;
 
-function cacheGet(key) {
-  const hit = lastGood.get(key);
+/** 缓存键带上 key 指纹: 换 key 后不会把上一个账号的数据当成兜底值。 */
+function cacheKey(fingerprint, endpoint) {
+  return `${fingerprint}|${endpoint}`;
+}
+
+function cacheGet(fingerprint, endpoint) {
+  const hit = lastGood.get(cacheKey(fingerprint, endpoint));
   if (!hit) return null;
   if (Date.now() - hit.at > CACHE_TTL_MS) return null;
   return hit;
 }
 
-function cacheSet(key, value) {
+function cacheSet(fingerprint, endpoint, value) {
   if (value === undefined || value === null) return;
-  lastGood.set(key, { value, at: Date.now() });
+  lastGood.set(cacheKey(fingerprint, endpoint), { value, at: Date.now() });
+}
+
+/** key 的短指纹: 落盘只存指纹, 绝不写原始 key。 */
+function keyFingerprint(apiKey) {
+  return createHash("sha256").update(String(apiKey)).digest("hex").slice(0, 16);
+}
+
+function cacheFile() {
+  return join(dshHome(), CACHE_FILE_NAME);
+}
+
+/**
+ * 冷启动兜底: 把上次进程落盘的额度数据读回内存缓存。
+ *
+ * 没有这一步时, DSH 一重启内存缓存就空 —— 此时 credits 单接口失败就没有旧值可退,
+ * 面板会整块空白。只认同一把 key(指纹相同), 过期的条目直接丢弃。
+ */
+function hydrateCache(fingerprint) {
+  if (!fingerprint || hydratedFor === fingerprint) return;
+  hydratedFor = fingerprint;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(cacheFile(), "utf8"));
+  } catch {
+    return;
+  }
+  if (!parsed || parsed.fingerprint !== fingerprint) return;
+  const entries = parsed.entries;
+  if (!entries || typeof entries !== "object") return;
+  for (const endpoint of PERSISTED_ENDPOINTS) {
+    const hit = entries[endpoint];
+    if (!hit || typeof hit.at !== "number") continue;
+    if (Date.now() - hit.at > CACHE_TTL_MS) continue;
+    if (lastGood.has(cacheKey(fingerprint, endpoint))) continue;
+    lastGood.set(cacheKey(fingerprint, endpoint), { value: hit.value, at: hit.at });
+  }
+}
+
+/** 把当前指纹下仍然新鲜的额度快照落盘; 失败静默, 不能影响查询本身。 */
+function persistCache(fingerprint) {
+  const entries = {};
+  for (const endpoint of PERSISTED_ENDPOINTS) {
+    const hit = cacheGet(fingerprint, endpoint);
+    if (hit) entries[endpoint] = hit;
+  }
+  if (Object.keys(entries).length === 0) return;
+  try {
+    const file = cacheFile();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ fingerprint, entries }, null, 2) + "\n", "utf8");
+  } catch {
+    /* 落盘失败不影响查询 */
+  }
 }
 
 /**
@@ -166,6 +235,8 @@ async function fetchDashboard(cfg, timeoutMs, onlyKeys) {
   const errors = [];
   const stale = [];
   const out = { ok: true, fetchedAt: Date.now(), errors, stale };
+  const fingerprint = keyFingerprint(cfg.apiKey);
+  hydrateCache(fingerprint);
 
   const list = Array.isArray(onlyKeys) && onlyKeys.length > 0
     ? ENDPOINTS.filter(([key]) => onlyKeys.includes(key))
@@ -184,14 +255,14 @@ async function fetchDashboard(cfg, timeoutMs, onlyKeys) {
     const handler = HANDLERS[r.key];
     if (!r.error && r.status === 200 && r.json) {
       handler.apply(r.json, out);
-      cacheSet(r.key, handler.snapshot(out));
+      cacheSet(fingerprint, r.key, handler.snapshot(out));
       continue;
     }
     const message = r.error
       ? `请求失败: ${r.error}`
       : (r.status === 401 ? "API key 无效或无权限 (HTTP 401)" : `HTTP ${r.status}`);
     // 401 是凭据问题, 不能拿旧数据掩盖; 其余失败回退上次成功值。
-    const hit = r.status === 401 ? null : cacheGet(r.key);
+    const hit = r.status === 401 ? null : cacheGet(fingerprint, r.key);
     if (hit) {
       handler.restore(hit.value, out);
       stale.push({ endpoint: r.key, message, at: hit.at });
@@ -205,14 +276,24 @@ async function fetchDashboard(cfg, timeoutMs, onlyKeys) {
   if (skipped.length > 0) {
     out.cached = [];
     for (const [key] of skipped) {
-      const hit = cacheGet(key);
+      const hit = cacheGet(fingerprint, key);
       if (!hit) continue;
       HANDLERS[key].restore(hit.value, out);
       out.cached.push(key);
     }
   }
 
-  if (errors.length >= list.length) out.ok = false;
+  // 落盘: 下次进程启动时 hydrateCache 能把这份快照读回来
+  persistCache(fingerprint);
+
+  if (errors.length >= list.length) {
+    out.ok = false;
+    // 全部失败时必须把具体原因带出去。否则客户端只收到 ok:false、拿不到任何文案,
+    // 面板会被渲染成一块空白(2026-10-29 key 失效时就这么空了一整片)。
+    out.error = `查询失败: ${errors
+      .map((e) => `${ENDPOINT_LABELS[e.endpoint] ?? e.endpoint} ${e.message}`)
+      .join("；")}`;
+  }
   return out;
 }
 
