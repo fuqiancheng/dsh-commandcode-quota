@@ -80,7 +80,7 @@ async function ccFetch(baseURL, path, apiKey, timeoutMs) {
       headers: {
         authorization: `Bearer ${apiKey}`,
         accept: "application/json",
-        "user-agent": "dsh-commandcode-quota/0.3.1"
+        "user-agent": "dsh-commandcode-quota/0.3.2"
       },
       signal: controller.signal
     });
